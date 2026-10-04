@@ -1,6 +1,9 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { extractPage } from "./extract";
 import { Feedbin } from "./feedbin";
+import type { Entry } from "./feedbin";
 import { HighlightStore } from "./highlights";
+import { ManualStore } from "./manual";
 import { MarkMode } from "./mark";
 import { isExpired, LinkStore } from "./share";
 import { listPage, messagePage, readerPage, SHARE_DAYS } from "./views";
@@ -13,6 +16,7 @@ const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_METHOD_NOT_ALLOWED = 405;
 const HTTP_GONE = 410;
+const HTTP_UNPROCESSABLE = 422;
 const HTTP_ERROR = 500;
 const DEFAULT_PORT = 3000;
 // Loopback by default: reachable only through a reverse proxy on this machine.
@@ -23,6 +27,8 @@ const NONCE_BYTES = 16;
 const MAX_QUOTE_CHARS = 1000;
 const MAX_CONTEXT_CHARS = 64;
 const MAX_HIGHLIGHTS_PER_ENTRY = 200;
+const MAX_URL_CHARS = 2048;
+const WEB_PROTOCOLS = ["http:", "https:"];
 
 // Strict by default: no scripts, no network calls.
 const CSP =
@@ -53,6 +59,18 @@ const SHARE_URL = env("SHARE_URL").replace(/\/$/, "");
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "";
 const links = new LinkStore(process.env.LINKS_FILE ?? "data/links.json");
 const highlights = new HighlightStore(process.env.HIGHLIGHTS_FILE ?? "data/highlights.json");
+const manual = new ManualStore(process.env.MANUAL_FILE ?? "data/manual.json");
+
+async function findEntry(id: number): Promise<Entry | null> {
+  return manual.find(id) ?? (await feedbin.entry(id));
+}
+
+// Feedbin pages and manual ones in one list, newest first.
+async function allEntries(): Promise<Entry[]> {
+  const merged = [...manual.list(), ...(await feedbin.list())];
+
+  return merged.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+}
 
 function newNonce(): string {
   return randomBytes(NONCE_BYTES).toString("base64");
@@ -84,7 +102,7 @@ async function sharedRoute(token: string): Promise<Response> {
     return html(messagePage("Link expired", "Ask the sender for a new link."), HTTP_GONE);
   }
 
-  const entry = await feedbin.entry(link.entryId);
+  const entry = await findEntry(link.entryId);
   if (!entry) {
     return notFound();
   }
@@ -152,17 +170,49 @@ async function addHighlight(req: Request, entryId: number): Promise<Response> {
   return Response.json({ id: saved.id });
 }
 
+function parseWebUrl(raw: string): URL | null {
+  if (raw.length > MAX_URL_CHARS) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(raw);
+
+    return WEB_PROTOCOLS.includes(parsed.protocol) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// Downloads the page now and keeps a copy. Can take up to the extractor's timeout.
+async function addUrl(req: Request): Promise<Response> {
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  const target = parseWebUrl(typeof body?.url === "string" ? body.url.trim() : "");
+  if (!target) {
+    return new Response("Not a valid http(s) URL", { status: HTTP_BAD_REQUEST });
+  }
+
+  const page = await extractPage(target.href).catch(() => null);
+  if (!page) {
+    return new Response("Could not read that page", { status: HTTP_UNPROCESSABLE });
+  }
+
+  const entry = manual.add({ url: target.href, ...page });
+
+  return Response.json({ id: entry.id });
+}
+
 async function adminRoute(req: Request, path: string, url: URL): Promise<Response> {
   if (path === "/") {
     const nonce = newNonce();
-    const page = listPage(await feedbin.list(), links.active(), SHARE_URL, nonce);
+    const page = listPage(await allEntries(), links.active(), SHARE_URL, nonce);
 
     return html(page, HTTP_OK, adminCsp(nonce));
   }
 
   const preview = path.match(/^\/a\/(\d+)$/);
   if (preview) {
-    const entry = await feedbin.entry(Number(preview[1]));
+    const entry = await findEntry(Number(preview[1]));
     if (!entry) {
       return notFound();
     }
@@ -178,7 +228,9 @@ async function adminRoute(req: Request, path: string, url: URL): Promise<Respons
   const revoke = path.match(/^\/revoke\/([\w-]+)$/);
   const addHl = path.match(/^\/highlight\/(\d+)$/);
   const delHl = path.match(/^\/unhighlight\/(\d+)\/([\w-]+)$/);
-  if (!share && !revoke && !addHl && !delHl) {
+  const addPage = path === "/add";
+  const rmPage = path.match(/^\/remove\/(\d+)$/);
+  if (!share && !revoke && !addHl && !delHl && !addPage && !rmPage) {
     return notFound();
   }
   if (req.method !== "POST") {
@@ -188,6 +240,19 @@ async function adminRoute(req: Request, path: string, url: URL): Promise<Respons
     return new Response("Forbidden", { status: HTTP_FORBIDDEN });
   }
 
+  if (addPage) {
+    return addUrl(req);
+  }
+  if (rmPage) {
+    const id = Number(rmPage[1]);
+    if (!manual.find(id)) {
+      return new Response("Not a manual page", { status: HTTP_NOT_FOUND });
+    }
+
+    manual.remove(id);
+
+    return new Response(null, { status: HTTP_NO_CONTENT });
+  }
   if (addHl) {
     return addHighlight(req, Number(addHl[1]));
   }

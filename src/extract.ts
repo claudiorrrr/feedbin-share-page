@@ -5,7 +5,7 @@ const FETCH_TIMEOUT_MS = 15_000;
 const BROWSER_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
 
-export type Extracted = { content: string; author: string | null };
+export type Extracted = { content: string; author: string | null; title: string | null };
 
 // Fetches the page and pulls the article out with Readability.
 // Used when Feedbin's own extractor refuses a site.
@@ -31,5 +31,5 @@ export async function extractPage(url: string): Promise<Extracted | null> {
     return null;
   }
 
-  return { content: article.content, author: article.byline ?? null };
+  return { content: article.content, author: article.byline ?? null, title: article.title || null };
 }

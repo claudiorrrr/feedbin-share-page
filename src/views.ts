@@ -1,5 +1,6 @@
 import type { Entry } from "./feedbin";
 import type { Highlight } from "./highlights";
+import { MANUAL_FEED_ID } from "./manual";
 import { markHighlights, MarkMode } from "./mark";
 import type { Link } from "./share";
 
@@ -64,6 +65,19 @@ ul.list{margin:2rem 0 0;padding:0;list-style:none}
 .row{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin-top:.5rem}
 button{padding:.25rem .8rem;color:var(--fg);font:inherit;font-size:.8125rem;background:none;border:1px solid var(--line);border-radius:999px;cursor:pointer}
 button:hover{color:var(--accent);border-color:var(--accent)}
+details.share{margin-top:.6rem}
+details.share summary{display:inline-block;padding:.25rem .8rem;font-size:.8125rem;list-style:none;border:1px solid var(--line);border-radius:999px;cursor:pointer}
+details.share summary::-webkit-details-marker{display:none}
+details.share summary:hover,details.share[open] summary{color:var(--accent);border-color:var(--accent)}
+.lnk{margin-top:.75rem;padding-left:.75rem;border-left:2px solid var(--line)}
+.lnk .row{margin-top:0}
+.lnk .row+.row{margin-top:.15rem}
+button.act{padding:0;color:var(--muted);border:0;border-radius:0;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:.2em}
+button.act:hover{color:var(--accent);text-decoration-color:currentColor}
+.add{display:flex;gap:.5rem;margin:2rem 0 0}
+.add input{flex:1;min-width:0;padding:.45rem .9rem;color:var(--fg);font:inherit;font-size:.9375rem;background:var(--soft);border:1px solid var(--line);border-radius:999px}
+.add input:focus-visible{outline-offset:1px}
+.add-msg{margin:.5rem .9rem 0;color:var(--accent)}
 a.link{word-break:break-all;user-select:all}
 mark.hl{padding:.05em 0;color:inherit;background:color-mix(in srgb,#ffd24a 55%,transparent);border-radius:.2em;-webkit-box-decoration-break:clone;box-decoration-break:clone}
 @media(prefers-color-scheme:dark){mark.hl{background:color-mix(in srgb,#ffd24a 32%,transparent)}}
@@ -329,7 +343,39 @@ document.addEventListener("click", async (ev) => {
     const res = await fetch("/revoke/" + d.revoke, { method: "POST" });
     if (!res.ok) return flash(b, "Error " + res.status);
     location.reload();
+  } else if (d.remove) {
+    if (!b.dataset.armed) {
+      b.dataset.armed = "1";
+      b.textContent = "Sure?";
+      setTimeout(() => {
+        delete b.dataset.armed;
+        b.textContent = "Remove";
+      }, 3000);
+      return;
+    }
+    const res = await fetch("/remove/" + d.remove, { method: "POST" });
+    if (!res.ok) return flash(b, "Error " + res.status);
+    location.reload();
   }
+});
+document.addEventListener("submit", async (ev) => {
+  const f = ev.target.closest("form.add");
+  if (!f) return;
+  ev.preventDefault();
+  const b = f.querySelector("button");
+  const msg = document.getElementById("add-msg");
+  msg.textContent = "";
+  b.disabled = true;
+  b.textContent = "Adding...";
+  const res = await fetch("/add", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url: f.elements.url.value }),
+  }).catch(() => null);
+  if (res && res.ok) return location.reload();
+  msg.textContent = res ? await res.text() : "Network error";
+  b.disabled = false;
+  b.textContent = "Add";
 });
 </script>`;
 
@@ -338,23 +384,30 @@ function linkRow(l: Link, baseUrl: string): string {
 
   const clicks = l.clicks ?? 0;
 
-  return `<div class="row"><span class="meta">Until ${shortDate(l.expiresAt)} · ${clicks} ${clicks === 1 ? "click" : "clicks"}</span>
-<button data-copy="${esc(url)}">Copy</button>
-<button data-revoke="${esc(l.token)}">Revoke</button></div>
-<div class="row"><a class="meta link" href="${esc(url)}" target="_blank" rel="noreferrer">${esc(url)}</a></div>`;
+  return `<div class="lnk"><div class="row"><span class="meta">Until ${shortDate(l.expiresAt)} · ${clicks} ${clicks === 1 ? "click" : "clicks"}</span>
+<button class="act" data-copy="${esc(url)}">Copy</button>
+<button class="act" data-revoke="${esc(l.token)}">Revoke</button></div>
+<div class="row"><a class="meta link" href="${esc(url)}" target="_blank" rel="noreferrer">${esc(url)}</a></div></div>`;
 }
 
 export function listPage(entries: Entry[], links: Link[], baseUrl: string, nonce: string): string {
   const items = entries
     .map((e) => {
-      const buttons = SHARE_DAYS.map((d) => `<button data-id="${e.id}" data-days="${d}">Link ${d}d</button>`).join("");
+      const buttons = SHARE_DAYS.map(
+        (d) => `<button data-id="${e.id}" data-days="${d}">${d} ${d === 1 ? "day" : "days"}</button>`,
+      ).join("");
       const active = links.filter((l) => l.entryId === e.id).map((l) => linkRow(l, baseUrl)).join("");
+      const remove =
+        e.feed_id === MANUAL_FEED_ID ? ` · <button class="act" data-remove="${e.id}">Remove</button>` : "";
 
       return `<li class="item"><a class="t" href="/a/${e.id}">${esc(e.title ?? e.url)}</a>
-<div class="meta">${esc(host(e.url))} · ${date(e.created_at)}</div><div class="row">${buttons}</div>${active}</li>`;
+<div class="meta">${esc(host(e.url))} · ${date(e.created_at)}${remove}</div>
+<details class="share"><summary>Share</summary><div class="row">${buttons}</div></details>${active}</li>`;
     })
     .join("");
-  const body = `<h1>Pages</h1><ul class="list">${items || "<li class='meta'>No saved pages.</li>"}</ul>`;
+  const form = `<form class="add"><input type="url" name="url" placeholder="Add a URL" required autocomplete="off"><button>Add</button></form>
+<p class="meta add-msg" id="add-msg"></p>`;
+  const body = `<h1>Pages</h1>${form}<ul class="list">${items || "<li class='meta'>No saved pages.</li>"}</ul>`;
 
   return layout("Pages", body, adminScript(nonce));
 }

@@ -336,7 +336,9 @@ document.addEventListener("click", async (ev) => {
 function linkRow(l: Link, baseUrl: string): string {
   const url = `${baseUrl}/s/${l.token}`;
 
-  return `<div class="row"><span class="meta">Until ${shortDate(l.expiresAt)}</span>
+  const clicks = l.clicks ?? 0;
+
+  return `<div class="row"><span class="meta">Until ${shortDate(l.expiresAt)} · ${clicks} ${clicks === 1 ? "click" : "clicks"}</span>
 <button data-copy="${esc(url)}">Copy</button>
 <button data-revoke="${esc(l.token)}">Revoke</button></div>
 <div class="row"><a class="meta link" href="${esc(url)}" target="_blank" rel="noreferrer">${esc(url)}</a></div>`;

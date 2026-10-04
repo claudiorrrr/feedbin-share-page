@@ -5,7 +5,8 @@ const TOKEN_BYTES = 16;
 const SECONDS_PER_DAY = 86_400;
 const PRUNE_GRACE_DAYS = 30;
 
-export type Link = { token: string; entryId: number; expiresAt: number };
+// clicks is absent on links issued before the counter existed.
+export type Link = { token: string; entryId: number; expiresAt: number; clicks?: number };
 
 function now(): number {
   return Math.floor(Date.now() / 1000);
@@ -51,6 +52,16 @@ export class LinkStore {
 
   find(token: string): Link | undefined {
     return this.links.find((l) => l.token === token);
+  }
+
+  click(token: string): void {
+    const link = this.find(token);
+    if (!link) {
+      return;
+    }
+
+    link.clicks = (link.clicks ?? 0) + 1;
+    this.save();
   }
 
   revoke(token: string): void {

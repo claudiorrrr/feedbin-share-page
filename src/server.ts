@@ -89,6 +89,9 @@ async function sharedRoute(token: string): Promise<Response> {
     return notFound();
   }
 
+  // Counted only when the article renders, not for expired or unknown links.
+  links.click(token);
+
   const until = new Date(link.expiresAt * 1000).toLocaleDateString("en", { month: "short", day: "numeric" });
 
   return html(readerPage(entry, `Link valid until ${until}`, highlights.list(entry.id), MarkMode.Public));

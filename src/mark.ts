@@ -51,10 +51,14 @@ function locate(full: string, h: Highlight): number {
   return best;
 }
 
+type Style = { cls: string; id: string; n?: number };
+
 // Wraps [start, end) of the concatenated text in <mark>. A highlight can span
 // several text nodes (bold, links...), so each piece gets its own mark.
-function wrap(doc: Document, nodes: Text[], start: number, end: number, id: string): void {
+// n numbers a comment: only its last piece carries it (CSS draws "[n]").
+function wrap(doc: Document, nodes: Text[], start: number, end: number, style: Style): void {
   let pos = 0;
+  let last: Element | null = null;
 
   for (const node of nodes) {
     const text = node.data;
@@ -73,11 +77,12 @@ function wrap(doc: Document, nodes: Text[], start: number, end: number, id: stri
     }
 
     const mark = doc.createElement("mark");
-    mark.className = "hl";
-    if (id) {
-      mark.setAttribute("data-id", id);
+    mark.className = style.cls;
+    if (style.id) {
+      mark.setAttribute("data-id", style.id);
     }
     mark.textContent = piece;
+    last = mark;
 
     const parts: Node[] = [];
     if (from > 0) {
@@ -89,10 +94,19 @@ function wrap(doc: Document, nodes: Text[], start: number, end: number, id: stri
     }
     node.replaceWith(...parts);
   }
+
+  if (style.n && last) {
+    last.setAttribute("data-n", String(style.n));
+  }
 }
 
-export function markHighlights(html: string, highlights: Highlight[], mode: MarkMode): string {
-  if (!html || highlights.length === 0) {
+export function markHighlights(
+  html: string,
+  highlights: Highlight[],
+  comments: Highlight[],
+  mode: MarkMode,
+): string {
+  if (!html || (highlights.length === 0 && comments.length === 0)) {
     return html;
   }
 
@@ -101,15 +115,21 @@ export function markHighlights(html: string, highlights: Highlight[], mode: Mark
   // The parser splits text at entities (&amp;); merge so one quote = one mark.
   document.body.normalize();
 
-  for (const h of highlights) {
-    // Marks split text nodes, so re-read them for every highlight.
+  const admin = mode === MarkMode.Admin;
+  const quotes = [
+    ...highlights.map((h) => ({ h, cls: "hl", n: 0 })),
+    ...comments.map((h, i) => ({ h, cls: "cm", n: i + 1 })),
+  ];
+
+  for (const { h, cls, n } of quotes) {
+    // Marks split text nodes, so re-read them for every quote.
     const nodes = textNodes(document.body);
-    const start = locate(nodes.map((n) => n.data).join(""), h);
+    const start = locate(nodes.map((t) => t.data).join(""), h);
     if (start === -1) {
       continue;
     }
 
-    wrap(document, nodes, start, start + h.exact.length, mode === MarkMode.Admin ? h.id : "");
+    wrap(document, nodes, start, start + h.exact.length, { cls, id: admin ? h.id : "", n });
   }
 
   return document.body.innerHTML;

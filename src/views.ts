@@ -1,5 +1,5 @@
 import type { Entry } from "./feedbin";
-import type { Highlight } from "./highlights";
+import type { Comment, Highlight } from "./highlights";
 import { MANUAL_FEED_ID } from "./manual";
 import { markHighlights, MarkMode } from "./mark";
 import type { Link } from "./share";
@@ -7,6 +7,7 @@ import type { Link } from "./share";
 export const SHARE_DAYS = [1, 7, 30];
 
 const DESCRIPTION_CHARS = 200;
+const NOTE_QUOTE_CHARS = 120;
 
 const STYLE = `
 :root{
@@ -82,6 +83,21 @@ a.link{word-break:break-all;user-select:all}
 mark.hl{padding:.05em 0;color:inherit;background:color-mix(in srgb,#ffd24a 55%,transparent);border-radius:.2em;-webkit-box-decoration-break:clone;box-decoration-break:clone}
 @media(prefers-color-scheme:dark){mark.hl{background:color-mix(in srgb,#ffd24a 32%,transparent)}}
 mark.hl[data-id]{cursor:pointer}
+mark.cm{padding:0;color:inherit;background:none;border-bottom:3px solid var(--fg)}
+mark.cm[data-n]::after{content:"[" attr(data-n) "]";margin-left:.2em;padding:0 .2em;color:var(--bg);font:700 .65em var(--mono);vertical-align:super;background:var(--fg)}
+mark.cm[data-id]{cursor:pointer}
+.notes{margin-top:3.5rem;border:3px solid var(--fg);box-shadow:6px 6px 0 var(--fg)}
+.notes h2{margin:0;padding:.35rem .9rem;color:var(--bg);font:700 .8125rem var(--mono);letter-spacing:.12em;text-transform:uppercase;background:var(--fg)}
+.notes ol{margin:0;padding:0;list-style:none}
+.note{padding:.8rem .9rem;border-top:3px solid var(--fg)}
+.notes h2+ol .note:first-child{border-top:0}
+.note .n{font:700 .8125rem var(--mono)}
+.note .q{color:var(--muted);font:.8125rem var(--mono);overflow-wrap:anywhere}
+.note .c{margin:.35rem 0 0;font-weight:600;white-space:pre-wrap;overflow-wrap:anywhere}
+.cm-box{position:fixed;z-index:10;width:min(22rem,calc(100vw - 1rem));padding:.6rem;background:var(--bg);border:3px solid var(--fg);box-shadow:5px 5px 0 var(--fg)}
+.cm-box[hidden]{display:none}
+.cm-box textarea{display:block;width:100%;min-height:5rem;padding:.4rem .5rem;color:var(--fg);font:inherit;font-size:.9375rem;background:var(--soft);border:2px solid var(--fg);border-radius:0;resize:vertical}
+.cm-box button{border:2px solid var(--fg);border-radius:0}
 .hl-btn{position:fixed;z-index:10;padding:.35rem .9rem;color:var(--bg);background:var(--fg);border-color:var(--fg);box-shadow:0 2px 10px rgb(0 0 0/.25)}
 .hl-btn[hidden]{display:none}
 `;
@@ -151,14 +167,33 @@ const highlightScript = (nonce: string) => `<script nonce="${nonce}">
   btn.className = "hl-btn";
   btn.hidden = true;
   document.body.appendChild(btn);
+  const cbtn = document.createElement("button");
+  cbtn.className = "hl-btn";
+  cbtn.textContent = "Comment";
+  cbtn.hidden = true;
+  document.body.appendChild(cbtn);
+  const box = document.createElement("div");
+  box.className = "cm-box";
+  box.hidden = true;
+  box.innerHTML = '<textarea maxlength="2000" placeholder="Comment"></textarea><div class="row"><button data-save>Save</button><button data-cancel>Cancel</button></div>';
+  document.body.appendChild(box);
+  const field = box.querySelector("textarea");
   const entry = art.dataset.entry;
   let action = "";
   let pending = null;
   let target = "";
+  let kind = "";
+  let editing = false;
 
   function hide() {
     btn.hidden = true;
+    cbtn.hidden = true;
     action = "";
+  }
+
+  function closeBox() {
+    box.hidden = true;
+    editing = false;
   }
 
   function place(rect) {
@@ -193,6 +228,7 @@ const highlightScript = (nonce: string) => `<script nonce="${nonce}">
   }
 
   function refresh() {
+    if (editing) return;
     const s = selection();
     if (!s) {
       if (action === "add") hide();
@@ -203,6 +239,9 @@ const highlightScript = (nonce: string) => `<script nonce="${nonce}">
     btn.textContent = "Highlight";
     place(s.rect);
     btn.hidden = false;
+    cbtn.style.top = btn.style.top;
+    cbtn.style.left = btn.getBoundingClientRect().right + 6 + "px";
+    cbtn.hidden = false;
   }
 
   // Mouse and keyboard show the button at once; touch selection only fires
@@ -218,15 +257,19 @@ const highlightScript = (nonce: string) => `<script nonce="${nonce}">
   // Keep the selection alive while the button is pressed.
   btn.addEventListener("mousedown", (ev) => ev.preventDefault());
   btn.addEventListener("touchstart", (ev) => ev.preventDefault(), { passive: false });
+  cbtn.addEventListener("mousedown", (ev) => ev.preventDefault());
+  cbtn.addEventListener("touchstart", (ev) => ev.preventDefault(), { passive: false });
 
   art.addEventListener("click", (ev) => {
     const m = ev.target.closest("mark[data-id]");
     if (!m || !getSelection().isCollapsed) return;
     action = "remove";
     target = m.dataset.id;
-    btn.textContent = "Remove highlight";
+    kind = m.classList.contains("cm") ? "uncomment" : "unhighlight";
+    btn.textContent = kind === "uncomment" ? "Delete comment" : "Remove highlight";
     place(m.getBoundingClientRect());
     btn.hidden = false;
+    cbtn.hidden = true;
   });
   document.addEventListener("click", (ev) => {
     if (action === "remove" && !ev.target.closest("mark[data-id], .hl-btn")) hide();
@@ -280,27 +323,87 @@ const highlightScript = (nonce: string) => `<script nonce="${nonce}">
     }
   }
 
+  // Highlights are unpainted at once. Deleting a comment reloads instead, so
+  // the remaining [n] markers renumber.
   async function remove() {
     const id = target;
+    const route = kind;
     hide();
-    for (const m of document.querySelectorAll('mark[data-id="' + id + '"]')) m.replaceWith(...m.childNodes);
-    art.normalize();
-    const res = await fetch("/unhighlight/" + entry + "/" + id, { method: "POST" }).catch(() => null);
-    if (!res || !res.ok) location.reload();
+    if (route === "unhighlight") {
+      for (const m of document.querySelectorAll('mark[data-id="' + id + '"]')) m.replaceWith(...m.childNodes);
+      art.normalize();
+    }
+    const res = await fetch("/" + route + "/" + entry + "/" + id, { method: "POST" }).catch(() => null);
+    if (route === "uncomment" || !res || !res.ok) location.reload();
   }
 
   btn.addEventListener("click", () => (action === "add" ? add() : remove()));
+
+  // The textarea steals the selection, so the quote is kept in pending.
+  cbtn.addEventListener("click", () => {
+    const r = pending.rect;
+    editing = true;
+    hide();
+    field.value = "";
+    box.hidden = false;
+    box.style.top = Math.min(Math.max(8, r.bottom + 8), innerHeight - box.offsetHeight - 8) + "px";
+    box.style.left = Math.min(Math.max(8, r.left), innerWidth - box.offsetWidth - 8) + "px";
+    field.focus();
+  });
+  box.addEventListener("click", async (ev) => {
+    const b = ev.target.closest("button");
+    if (!b) return;
+    if (b.hasAttribute("data-cancel")) return closeBox();
+    const text = field.value.trim();
+    if (!text) return;
+    b.disabled = true;
+    const res = await fetch("/comment/" + entry, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...pending.quote, text }),
+    }).catch(() => null);
+    if (res && res.ok) return location.reload();
+    b.disabled = false;
+    b.textContent = "Error";
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && editing) closeBox();
+  });
 })();
 </script>`;
 
-export function readerPage(e: Entry, note: string, highlights: Highlight[], mode: MarkMode, nonce = ""): string {
+function notesSection(comments: Comment[]): string {
+  if (comments.length === 0) {
+    return "";
+  }
+
+  const items = comments
+    .map((c, i) => {
+      const quote = esc(c.exact.slice(0, NOTE_QUOTE_CHARS)) + (c.exact.length > NOTE_QUOTE_CHARS ? "..." : "");
+
+      return `<li class="note"><span class="n">[${i + 1}]</span> <span class="q">${quote}</span><p class="c">${esc(c.text)}</p></li>`;
+    })
+    .join("");
+
+  return `<section class="notes"><h2>Notes</h2><ol>${items}</ol></section>`;
+}
+
+export function readerPage(
+  e: Entry,
+  note: string,
+  highlights: Highlight[],
+  comments: Comment[],
+  mode: MarkMode,
+  nonce = "",
+): string {
   const admin = mode === MarkMode.Admin;
   const byline = [e.author, date(e.published || e.created_at)].filter(Boolean).map((s) => esc(s as string));
-  const content = markHighlights(e.content ?? "<p>No content.</p>", highlights, mode);
+  const content = markHighlights(e.content ?? "<p>No content.</p>", highlights, comments, mode);
   const body = `<p class="kicker">${esc(host(e.url))}</p>
 <h1>${esc(e.title ?? e.url)}</h1>
 <p class="meta byline">${byline.join(" · ")}</p>
 <article${admin ? ` data-entry="${e.id}"` : ""}>${content}</article>
+${notesSection(comments)}
 <p class="meta foot"><a href="${esc(e.url)}" rel="noreferrer">Read the original</a> · ${esc(note)}</p>`;
 
   return layout(e.title ?? e.url, body, admin ? highlightScript(nonce) : "", previewTags(e));

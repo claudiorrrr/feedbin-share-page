@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { extractPage } from "./extract";
 import { Feedbin } from "./feedbin";
 import type { Entry } from "./feedbin";
-import { HighlightStore } from "./highlights";
+import { HighlightStore, type Comment } from "./highlights";
 import { ManualStore } from "./manual";
 import { MarkMode } from "./mark";
 import { isExpired, LinkStore } from "./share";
@@ -27,6 +27,8 @@ const NONCE_BYTES = 16;
 const MAX_QUOTE_CHARS = 1000;
 const MAX_CONTEXT_CHARS = 64;
 const MAX_HIGHLIGHTS_PER_ENTRY = 200;
+const MAX_COMMENTS_PER_ENTRY = 100;
+const MAX_COMMENT_CHARS = 2000;
 const MAX_URL_CHARS = 2048;
 const WEB_PROTOCOLS = ["http:", "https:"];
 
@@ -59,6 +61,7 @@ const SHARE_URL = env("SHARE_URL").replace(/\/$/, "");
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "";
 const links = new LinkStore(process.env.LINKS_FILE ?? "data/links.json");
 const highlights = new HighlightStore(process.env.HIGHLIGHTS_FILE ?? "data/highlights.json");
+const comments = new HighlightStore<Comment>(process.env.COMMENTS_FILE ?? "data/comments.json");
 const manual = new ManualStore(process.env.MANUAL_FILE ?? "data/manual.json");
 
 async function findEntry(id: number): Promise<Entry | null> {
@@ -112,7 +115,9 @@ async function sharedRoute(token: string): Promise<Response> {
 
   const until = new Date(link.expiresAt * 1000).toLocaleDateString("en", { month: "short", day: "numeric" });
 
-  return html(readerPage(entry, `Link valid until ${until}`, highlights.list(entry.id), MarkMode.Public));
+  const note = `Link valid until ${until}`;
+
+  return html(readerPage(entry, note, highlights.list(entry.id), comments.list(entry.id), MarkMode.Public));
 }
 
 function sha256(s: string): Buffer {
@@ -151,21 +156,46 @@ function isCrossSite(req: Request): boolean {
   return site !== null && site !== "same-origin";
 }
 
-// No Feedbin lookup here: the caller is already authenticated, and a network
-// round-trip would make every highlight wait on it.
-async function addHighlight(req: Request, entryId: number): Promise<Response> {
-  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+type Body = Record<string, unknown> | null;
+
+// The selected text plus a little context on each side, or null if unusable.
+function readQuote(body: Body): { exact: string; prefix: string; suffix: string } | null {
   const exact = typeof body?.exact === "string" ? body.exact : "";
-  const full = highlights.list(entryId).length >= MAX_HIGHLIGHTS_PER_ENTRY;
-  if (!exact || exact.length > MAX_QUOTE_CHARS || full) {
-    return new Response("Bad highlight", { status: HTTP_BAD_REQUEST });
+  if (!exact || exact.length > MAX_QUOTE_CHARS) {
+    return null;
   }
 
-  const saved = highlights.add(entryId, {
+  return {
     exact,
     prefix: String(body?.prefix ?? "").slice(-MAX_CONTEXT_CHARS),
     suffix: String(body?.suffix ?? "").slice(0, MAX_CONTEXT_CHARS),
-  });
+  };
+}
+
+// No Feedbin lookup here: the caller is already authenticated, and a network
+// round-trip would make every highlight wait on it.
+async function addHighlight(req: Request, entryId: number): Promise<Response> {
+  const quote = readQuote((await req.json().catch(() => null)) as Body);
+  const full = highlights.list(entryId).length >= MAX_HIGHLIGHTS_PER_ENTRY;
+  if (!quote || full) {
+    return new Response("Bad highlight", { status: HTTP_BAD_REQUEST });
+  }
+
+  const saved = highlights.add(entryId, quote);
+
+  return Response.json({ id: saved.id });
+}
+
+async function addComment(req: Request, entryId: number): Promise<Response> {
+  const body = (await req.json().catch(() => null)) as Body;
+  const quote = readQuote(body);
+  const text = typeof body?.text === "string" ? body.text.trim() : "";
+  const full = comments.list(entryId).length >= MAX_COMMENTS_PER_ENTRY;
+  if (!quote || !text || text.length > MAX_COMMENT_CHARS || full) {
+    return new Response("Bad comment", { status: HTTP_BAD_REQUEST });
+  }
+
+  const saved = comments.add(entryId, { ...quote, text });
 
   return Response.json({ id: saved.id });
 }
@@ -219,7 +249,7 @@ async function adminRoute(req: Request, path: string, url: URL): Promise<Respons
 
     const nonce = newNonce();
     const note = "Preview · select text to highlight";
-    const page = readerPage(entry, note, highlights.list(entry.id), MarkMode.Admin, nonce);
+    const page = readerPage(entry, note, highlights.list(entry.id), comments.list(entry.id), MarkMode.Admin, nonce);
 
     return html(page, HTTP_OK, adminCsp(nonce));
   }
@@ -230,7 +260,9 @@ async function adminRoute(req: Request, path: string, url: URL): Promise<Respons
   const delHl = path.match(/^\/unhighlight\/(\d+)\/([\w-]+)$/);
   const addPage = path === "/add";
   const rmPage = path.match(/^\/remove\/(\d+)$/);
-  if (!share && !revoke && !addHl && !delHl && !addPage && !rmPage) {
+  const addCm = path.match(/^\/comment\/(\d+)$/);
+  const delCm = path.match(/^\/uncomment\/(\d+)\/([\w-]+)$/);
+  if (!share && !revoke && !addHl && !delHl && !addPage && !rmPage && !addCm && !delCm) {
     return notFound();
   }
   if (req.method !== "POST") {
@@ -250,6 +282,14 @@ async function adminRoute(req: Request, path: string, url: URL): Promise<Respons
     }
 
     manual.remove(id);
+
+    return new Response(null, { status: HTTP_NO_CONTENT });
+  }
+  if (addCm) {
+    return addComment(req, Number(addCm[1]));
+  }
+  if (delCm) {
+    comments.remove(Number(delCm[1]), delCm[2]);
 
     return new Response(null, { status: HTTP_NO_CONTENT });
   }

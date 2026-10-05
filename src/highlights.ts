@@ -8,23 +8,26 @@ const ID_BYTES = 6;
 // survives small changes in how the article is extracted.
 export type Highlight = { id: string; exact: string; prefix: string; suffix: string };
 
-type Db = Record<string, Highlight[]>;
+// A comment is a quote with a note. Kept apart from highlights: separate
+// store, separate look.
+export type Comment = Highlight & { text: string };
 
-export class HighlightStore {
+// Also stores comments: HighlightStore<Comment>.
+export class HighlightStore<T extends Highlight = Highlight> {
   private path: string;
-  private db: Db;
+  private db: Record<string, T[]>;
 
   constructor(path: string) {
     this.path = path;
-    this.db = readJson<Db>(path, {});
+    this.db = readJson<Record<string, T[]>>(path, {});
   }
 
-  list(entryId: number): Highlight[] {
+  list(entryId: number): T[] {
     return this.db[entryId] ?? [];
   }
 
-  add(entryId: number, quote: Omit<Highlight, "id">): Highlight {
-    const highlight = { id: randomBytes(ID_BYTES).toString("hex"), ...quote };
+  add(entryId: number, quote: Omit<T, "id">): T {
+    const highlight = { id: randomBytes(ID_BYTES).toString("hex"), ...quote } as T;
     this.db[entryId] = [...this.list(entryId), highlight];
     writeJson(this.path, this.db);
 

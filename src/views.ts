@@ -86,6 +86,10 @@ mark.hl[data-id]{cursor:pointer}
 mark.cm{padding:0;color:inherit;background:none;border-bottom:3px solid var(--fg)}
 mark.cm[data-n]::after{content:"[" attr(data-n) "]";margin-left:.2em;padding:0 .2em;color:var(--bg);font:700 .65em var(--mono);vertical-align:super;background:var(--fg)}
 mark.cm[data-id]{cursor:pointer}
+.pub{position:relative}
+.pub mark.cm{cursor:help}
+.pub mark.cm::before{content:attr(data-text);position:absolute;left:0;z-index:5;margin-top:1.7em;width:max-content;max-width:min(26rem,100%);padding:.5rem .7rem;color:var(--fg);font:600 .9375rem/1.45 var(--font);text-align:left;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);border:3px solid var(--fg);box-shadow:4px 4px 0 var(--fg);visibility:hidden;pointer-events:none}
+.pub mark.cm:hover::before,.pub mark.cm:focus::before{visibility:visible}
 .notes{margin-top:3.5rem;border:3px solid var(--fg);box-shadow:6px 6px 0 var(--fg)}
 .notes h2{margin:0;padding:.35rem .9rem;color:var(--bg);font:700 .8125rem var(--mono);letter-spacing:.12em;text-transform:uppercase;background:var(--fg)}
 .notes ol{margin:0;padding:0;list-style:none}
@@ -178,11 +182,12 @@ const highlightScript = (nonce: string) => `<script nonce="${nonce}">
   box.innerHTML = '<textarea maxlength="2000" placeholder="Comment"></textarea><div class="row"><button data-save>Save</button><button data-cancel>Cancel</button></div>';
   document.body.appendChild(box);
   const field = box.querySelector("textarea");
+  const save = box.querySelector("[data-save]");
   const entry = art.dataset.entry;
   let action = "";
   let pending = null;
   let target = "";
-  let kind = "";
+  let viewing = "";
   let editing = false;
 
   function hide() {
@@ -194,6 +199,26 @@ const highlightScript = (nonce: string) => `<script nonce="${nonce}">
   function closeBox() {
     box.hidden = true;
     editing = false;
+    viewing = "";
+    field.readOnly = false;
+    save.textContent = "Save";
+  }
+
+  function openBox(rect) {
+    editing = true;
+    hide();
+    box.hidden = false;
+    box.style.top = Math.min(Math.max(8, rect.bottom + 8), innerHeight - box.offsetHeight - 8) + "px";
+    box.style.left = Math.min(Math.max(8, rect.left), innerWidth - box.offsetWidth - 8) + "px";
+  }
+
+  // Click on a comment: read it, or delete it.
+  function view(m) {
+    viewing = m.dataset.id;
+    field.value = m.dataset.text;
+    field.readOnly = true;
+    save.textContent = "Delete";
+    openBox(m.getBoundingClientRect());
   }
 
   function place(rect) {
@@ -263,10 +288,10 @@ const highlightScript = (nonce: string) => `<script nonce="${nonce}">
   art.addEventListener("click", (ev) => {
     const m = ev.target.closest("mark[data-id]");
     if (!m || !getSelection().isCollapsed) return;
+    if (m.classList.contains("cm")) return view(m);
     action = "remove";
     target = m.dataset.id;
-    kind = m.classList.contains("cm") ? "uncomment" : "unhighlight";
-    btn.textContent = kind === "uncomment" ? "Delete comment" : "Remove highlight";
+    btn.textContent = "Remove highlight";
     place(m.getBoundingClientRect());
     btn.hidden = false;
     cbtn.hidden = true;
@@ -323,37 +348,32 @@ const highlightScript = (nonce: string) => `<script nonce="${nonce}">
     }
   }
 
-  // Highlights are unpainted at once. Deleting a comment reloads instead, so
-  // the remaining [n] markers renumber.
   async function remove() {
     const id = target;
-    const route = kind;
     hide();
-    if (route === "unhighlight") {
-      for (const m of document.querySelectorAll('mark[data-id="' + id + '"]')) m.replaceWith(...m.childNodes);
-      art.normalize();
-    }
-    const res = await fetch("/" + route + "/" + entry + "/" + id, { method: "POST" }).catch(() => null);
-    if (route === "uncomment" || !res || !res.ok) location.reload();
+    for (const m of document.querySelectorAll('mark[data-id="' + id + '"]')) m.replaceWith(...m.childNodes);
+    art.normalize();
+    const res = await fetch("/unhighlight/" + entry + "/" + id, { method: "POST" }).catch(() => null);
+    if (!res || !res.ok) location.reload();
   }
 
   btn.addEventListener("click", () => (action === "add" ? add() : remove()));
 
   // The textarea steals the selection, so the quote is kept in pending.
   cbtn.addEventListener("click", () => {
-    const r = pending.rect;
-    editing = true;
-    hide();
     field.value = "";
-    box.hidden = false;
-    box.style.top = Math.min(Math.max(8, r.bottom + 8), innerHeight - box.offsetHeight - 8) + "px";
-    box.style.left = Math.min(Math.max(8, r.left), innerWidth - box.offsetWidth - 8) + "px";
+    openBox(pending.rect);
     field.focus();
   });
   box.addEventListener("click", async (ev) => {
     const b = ev.target.closest("button");
     if (!b) return;
     if (b.hasAttribute("data-cancel")) return closeBox();
+    if (viewing) {
+      b.disabled = true;
+      await fetch("/uncomment/" + entry + "/" + viewing, { method: "POST" }).catch(() => null);
+      return location.reload();
+    }
     const text = field.value.trim();
     if (!text) return;
     b.disabled = true;
@@ -406,7 +426,7 @@ export function readerPage(
   const body = `<p class="kicker">${esc(host(e.url))}</p>
 <h1>${esc(e.title ?? e.url)}</h1>
 <p class="meta byline">${byline.join(" · ")}</p>
-<article${admin ? ` data-entry="${e.id}"` : ""}>${content}</article>
+<article${admin ? ` data-entry="${e.id}"` : ` class="pub"`}>${content}</article>
 ${notesSection(comments)}
 <p class="meta foot"><a href="${esc(e.url)}" rel="noreferrer">Read the original</a> · ${esc(note)}</p>`;
 

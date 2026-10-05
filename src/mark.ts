@@ -1,5 +1,5 @@
 import { parseHTML } from "linkedom";
-import type { Highlight } from "./highlights";
+import type { Comment, Highlight } from "./highlights";
 
 const TEXT_NODE = 3;
 
@@ -51,7 +51,9 @@ function locate(full: string, h: Highlight): number {
   return best;
 }
 
-type Style = { cls: string; id: string; n?: number };
+// text: a comment's note, read by CSS (public) or the admin script.
+// focusable: lets a tap reveal the note on touch screens.
+type Style = { cls: string; id: string; n?: number; text?: string; focusable?: boolean };
 
 // Wraps [start, end) of the concatenated text in <mark>. A highlight can span
 // several text nodes (bold, links...), so each piece gets its own mark.
@@ -81,6 +83,13 @@ function wrap(doc: Document, nodes: Text[], start: number, end: number, style: S
     if (style.id) {
       mark.setAttribute("data-id", style.id);
     }
+    if (style.text) {
+      // The serializer escapes quotes only; without this "&amp;" would read as "&".
+      mark.setAttribute("data-text", style.text.replace(/&/g, "&amp;"));
+    }
+    if (style.focusable) {
+      mark.setAttribute("tabindex", "0");
+    }
     mark.textContent = piece;
     last = mark;
 
@@ -103,7 +112,7 @@ function wrap(doc: Document, nodes: Text[], start: number, end: number, style: S
 export function markHighlights(
   html: string,
   highlights: Highlight[],
-  comments: Highlight[],
+  comments: Comment[],
   mode: MarkMode,
 ): string {
   if (!html || (highlights.length === 0 && comments.length === 0)) {
@@ -117,11 +126,11 @@ export function markHighlights(
 
   const admin = mode === MarkMode.Admin;
   const quotes = [
-    ...highlights.map((h) => ({ h, cls: "hl", n: 0 })),
-    ...comments.map((h, i) => ({ h, cls: "cm", n: i + 1 })),
+    ...highlights.map((h) => ({ h, cls: "hl", n: 0, text: "", focusable: false })),
+    ...comments.map((h, i) => ({ h, cls: "cm", n: i + 1, text: h.text, focusable: !admin })),
   ];
 
-  for (const { h, cls, n } of quotes) {
+  for (const { h, cls, n, text, focusable } of quotes) {
     // Marks split text nodes, so re-read them for every quote.
     const nodes = textNodes(document.body);
     const start = locate(nodes.map((t) => t.data).join(""), h);
@@ -129,7 +138,7 @@ export function markHighlights(
       continue;
     }
 
-    wrap(document, nodes, start, start + h.exact.length, { cls, id: admin ? h.id : "", n });
+    wrap(document, nodes, start, start + h.exact.length, { cls, id: admin ? h.id : "", n, text, focusable });
   }
 
   return document.body.innerHTML;

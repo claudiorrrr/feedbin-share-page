@@ -1,12 +1,12 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { extractPage } from "./extract";
+import { extractPage, parseArticle } from "./extract";
 import { Feedbin } from "./feedbin";
 import type { Entry } from "./feedbin";
 import { HighlightStore, type Comment } from "./highlights";
 import { ManualStore } from "./manual";
 import { MarkMode } from "./mark";
 import { isExpired, LinkStore } from "./share";
-import { listPage, messagePage, readerPage, SHARE_DAYS } from "./views";
+import { importPage, listPage, messagePage, readerPage, SHARE_DAYS } from "./views";
 
 const HTTP_OK = 200;
 const HTTP_NO_CONTENT = 204;
@@ -30,6 +30,7 @@ const MAX_HIGHLIGHTS_PER_ENTRY = 200;
 const MAX_COMMENTS_PER_ENTRY = 100;
 const MAX_COMMENT_CHARS = 2000;
 const MAX_URL_CHARS = 2048;
+const MAX_HTML_CHARS = 10_000_000;
 const WEB_PROTOCOLS = ["http:", "https:"];
 
 // Strict by default: no scripts, no network calls.
@@ -232,7 +233,34 @@ async function addUrl(req: Request): Promise<Response> {
   return Response.json({ id: entry.id });
 }
 
+// The bookmarklet sends the page as the browser rendered it, for sites that
+// refuse server-side fetches (bot protection, paywalls the user has passed).
+async function addHtml(req: Request): Promise<Response> {
+  const body = (await req.json().catch(() => null)) as Body;
+  const target = parseWebUrl(typeof body?.url === "string" ? body.url : "");
+  const html = typeof body?.html === "string" ? body.html : "";
+  if (!target || !html || html.length > MAX_HTML_CHARS) {
+    return new Response("Bad page", { status: HTTP_BAD_REQUEST });
+  }
+
+  const page = parseArticle(html, target.href);
+  if (!page) {
+    return new Response("No article found in that page", { status: HTTP_UNPROCESSABLE });
+  }
+
+  const sent = typeof body?.title === "string" ? body.title.trim() : "";
+  const entry = manual.add({ url: target.href, ...page, title: page.title ?? (sent || null) });
+
+  return Response.json({ id: entry.id });
+}
+
 async function adminRoute(req: Request, path: string, url: URL): Promise<Response> {
+  if (path === "/import") {
+    const nonce = newNonce();
+
+    return html(importPage(nonce), HTTP_OK, adminCsp(nonce));
+  }
+
   if (path === "/") {
     const nonce = newNonce();
     const page = listPage(await allEntries(), links.active(), SHARE_URL, nonce);
@@ -259,10 +287,11 @@ async function adminRoute(req: Request, path: string, url: URL): Promise<Respons
   const addHl = path.match(/^\/highlight\/(\d+)$/);
   const delHl = path.match(/^\/unhighlight\/(\d+)\/([\w-]+)$/);
   const addPage = path === "/add";
+  const addPageHtml = path === "/add-html";
   const rmPage = path.match(/^\/remove\/(\d+)$/);
   const addCm = path.match(/^\/comment\/(\d+)$/);
   const delCm = path.match(/^\/uncomment\/(\d+)\/([\w-]+)$/);
-  if (!share && !revoke && !addHl && !delHl && !addPage && !rmPage && !addCm && !delCm) {
+  if (!share && !revoke && !addHl && !delHl && !addPage && !addPageHtml && !rmPage && !addCm && !delCm) {
     return notFound();
   }
   if (req.method !== "POST") {
@@ -274,6 +303,9 @@ async function adminRoute(req: Request, path: string, url: URL): Promise<Respons
 
   if (addPage) {
     return addUrl(req);
+  }
+  if (addPageHtml) {
+    return addHtml(req);
   }
   if (rmPage) {
     const id = Number(rmPage[1]);

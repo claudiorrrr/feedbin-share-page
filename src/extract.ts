@@ -19,7 +19,13 @@ export async function extractPage(url: string): Promise<Extracted | null> {
     return null;
   }
 
-  const { document } = parseHTML(await res.text());
+  return parseArticle(await res.text(), url);
+}
+
+// Pulls the article out of HTML that is already in hand, e.g. the page as the
+// user's browser rendered it (sites that block server fetches).
+export function parseArticle(html: string, url: string): Extracted | null {
+  const { document } = parseHTML(html);
 
   // Readability turns relative links and image paths into absolute ones
   // using the document URL.

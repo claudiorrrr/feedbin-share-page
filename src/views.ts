@@ -369,6 +369,10 @@ const highlightScript = (nonce: string) => `<script nonce="${nonce}">
   document.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape" && editing) closeBox();
   });
+  // A forgotten open box would block the Highlight/Comment buttons.
+  document.addEventListener("mousedown", (ev) => {
+    if (editing && !ev.target.closest(".cm-box")) closeBox();
+  });
 })();
 </script>`;
 
@@ -480,6 +484,50 @@ document.addEventListener("submit", async (ev) => {
   b.disabled = false;
   b.textContent = "Add";
 });
+// Bookmarklet: opens /import on this origin and posts it the page as the
+// browser rendered it. Built here so it always carries the origin in use.
+const bm = document.getElementById("bm");
+if (bm) {
+  bm.href = "javascript:(function(){var B=" + JSON.stringify(location.origin) +
+    ";var w=window.open(B+'/import','pagina');window.addEventListener('message',function f(e){" +
+    "if(e.source!==w||e.origin!==B||e.data!=='ready')return;window.removeEventListener('message',f);" +
+    "w.postMessage({url:location.href,title:document.title,html:document.documentElement.outerHTML},B);});})();";
+}
+</script>`;
+
+// Opened by the bookmarklet. Only the window that opened it may send a page,
+// and nothing is stored until the user presses Save.
+const importScript = (nonce: string) => `<script nonce="${nonce}">
+const status = document.getElementById("status");
+const card = document.getElementById("card");
+const save = document.getElementById("save");
+let page = null;
+window.addEventListener("message", (ev) => {
+  if (ev.source !== window.opener || !ev.data || typeof ev.data.html !== "string") return;
+  page = ev.data;
+  let host = "";
+  try { host = new URL(page.url).hostname; } catch {}
+  document.getElementById("host").textContent = host;
+  document.getElementById("ttl").textContent = page.title;
+  status.textContent = Math.round(page.html.length / 1024) + " KB received";
+  card.hidden = false;
+});
+if (window.opener) window.opener.postMessage("ready", "*");
+else status.textContent = "Open this page with the bookmarklet.";
+save.addEventListener("click", async () => {
+  if (!page) return;
+  save.disabled = true;
+  save.textContent = "Saving...";
+  const res = await fetch("/add-html", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url: page.url, title: page.title, html: page.html }),
+  }).catch(() => null);
+  if (res && res.ok) return location.replace("/");
+  status.textContent = res ? await res.text() : "Network error";
+  save.disabled = false;
+  save.textContent = "Save";
+});
 </script>`;
 
 function linkRow(l: Link, baseUrl: string): string {
@@ -510,9 +558,17 @@ export function listPage(entries: Entry[], links: Link[], baseUrl: string, nonce
     .join("");
   const form = `<form class="add"><input type="url" name="url" placeholder="Add a URL" required autocomplete="off"><button>Add</button></form>
 <p class="meta add-msg" id="add-msg"></p>`;
-  const body = `<h1>Pages</h1>${form}<ul class="list">${items || "<li class='meta'>No saved pages.</li>"}</ul>`;
+  const tip = `<p class="meta foot"><a id="bm" href="#">Save to pagina</a>: drag it to your bookmarks bar, then click it on any page, including ones that block downloads.</p>`;
+  const body = `<h1>Pages</h1>${form}<ul class="list">${items || "<li class='meta'>No saved pages.</li>"}</ul>${tip}`;
 
   return layout("Pages", body, adminScript(nonce));
+}
+
+export function importPage(nonce: string): string {
+  const body = `<h1>Save page</h1><p class="meta" id="status">Waiting for the page...</p>
+<div id="card" hidden><p class="kicker" id="host"></p><p id="ttl"></p><button id="save">Save</button></div>`;
+
+  return layout("Save page", body, importScript(nonce));
 }
 
 export function messagePage(title: string, text: string): string {

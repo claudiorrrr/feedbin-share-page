@@ -470,6 +470,11 @@ document.addEventListener("click", async (ev) => {
     const res = await fetch("/revoke/" + d.revoke, { method: "POST" });
     if (!res.ok) return flash(b, "Error " + res.status);
     location.reload();
+  } else if ("toggleFeedbin" in d) {
+    const items = document.querySelectorAll("li[data-feedbin]");
+    const show = items[0].hidden;
+    items.forEach((li) => (li.hidden = !show));
+    b.textContent = (show ? "Hide Feedbin (" : "Show Feedbin (") + d.count + ")";
   } else if (d.remove) {
     if (!b.dataset.armed) {
       b.dataset.armed = "1";
@@ -567,19 +572,26 @@ export function listPage(entries: Entry[], links: Link[], baseUrl: string, nonce
       const buttons = SHARE_DAYS.map(
         (d) => `<button data-id="${e.id}" data-days="${d}">${d} ${d === 1 ? "day" : "days"}</button>`,
       ).join("");
-      const active = links.filter((l) => l.entryId === e.id).map((l) => linkRow(l, baseUrl)).join("");
-      const remove =
-        e.feed_id === MANUAL_FEED_ID ? ` · <button class="act" data-remove="${e.id}">Remove</button>` : "";
+      const own = links.filter((l) => l.entryId === e.id);
+      const active = own.map((l) => linkRow(l, baseUrl)).join("");
+      const clicks = own.reduce((sum, l) => sum + (l.clicks ?? 0), 0);
+      const isManual = e.feed_id === MANUAL_FEED_ID;
+      const remove = isManual ? ` · <button class="act" data-remove="${e.id}">Remove</button>` : "";
 
-      return `<li class="item"><a class="t" href="/a/${e.id}">${esc(e.title ?? e.url)}</a>
-<div class="meta">${esc(host(e.url))} · ${date(e.created_at)}${remove}</div>
+      // Feedbin items start hidden; the toggle button reveals them.
+      return `<li class="item"${isManual ? "" : ' data-feedbin hidden'}><a class="t" href="/a/${e.id}">${esc(e.title ?? e.url)}</a>
+<div class="meta">${esc(host(e.url))} · ${date(e.created_at)} · ${clicks} ${clicks === 1 ? "click" : "clicks"}${remove}</div>
 <details class="share"><summary>Share</summary><div class="row">${buttons}</div></details>${active}</li>`;
     })
     .join("");
   const form = `<form class="add"><input type="url" name="url" placeholder="Add a URL" required autocomplete="off"><button>Add</button></form>
 <p class="meta add-msg" id="add-msg"></p>`;
+  const feedbinCount = entries.filter((e) => e.feed_id !== MANUAL_FEED_ID).length;
+  const toggle = feedbinCount
+    ? `<p class="meta"><button class="act" data-toggle-feedbin data-count="${feedbinCount}">Show Feedbin (${feedbinCount})</button></p>`
+    : "";
   const tip = `<p class="meta foot"><a id="bm" href="#">Save to pagina</a>: drag it to your bookmarks bar, then click it on any page, including ones that block downloads.</p>`;
-  const body = `<h1>Pages</h1>${form}<ul class="list">${items || "<li class='meta'>No saved pages.</li>"}</ul>${tip}`;
+  const body = `<h1>Pages</h1>${form}${toggle}<ul class="list">${items || "<li class='meta'>No saved pages.</li>"}</ul>${tip}`;
 
   return layout("Pages", body, adminScript(nonce));
 }
